@@ -44,7 +44,7 @@ CONFIG = {
         "api_key": os.getenv("JOOBLE_API_KEY", "")
     },
       }
-}
+
 
 # -------------------------
 # Simple DB to avoid duplicates
