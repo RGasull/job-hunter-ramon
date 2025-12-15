@@ -331,11 +331,12 @@ def send_email(subject: str, html_body: str):
         html_body = "<p>Nenhuma vaga nova hoje.</p>"
 
     message = Mail(
-        from_email=from_email,
-        to_emails=to_emails,
-        subject=subject,
-        html_content=html_body
+    from_email="gasull.ramon@gmail.com",
+    to_emails=["gasull.ramon@gmail.com"],
+    subject=subject,
+    html_content=html_body
     )
+
 
     try:
         sg = SendGridAPIClient(api_key)
