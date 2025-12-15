@@ -328,10 +328,10 @@ def send_email(subject, html_body):
     msg["Subject"] = f"{CONFIG['email'].get('subject_prefix', '')} {subject}".strip()
 
     # Header From (nome + email) → OK
-    msg["From"] = formataddr((
-        CONFIG["email"]["from_name"],
-        CONFIG["email"]["from"]
-    ))
+   msg["From"] = formataddr((
+    CONFIG["email"].get("from_name", CONFIG["email"]["from"]),
+    CONFIG["email"]["from"]
+))
 
     msg["To"] = ", ".join(CONFIG["email"]["to"])
 
