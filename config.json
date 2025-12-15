@@ -1,0 +1,19 @@
+{
+  "priority_countries": ["Brazil", "Spain"],
+  "languages": ["pt", "es", "ca"],
+  "contracts": ["CLT", "PJ"],
+  "modalities": ["Presencial", "Híbrida", "Remota"],
+  "min_salary_brl": 14000,
+  "keywords": [
+    "PMO",
+    "Governança",
+    "Gestão de Mudanças",
+    "Project Controls",
+    "CAPEX",
+    "FEL",
+    "AACE",
+    "Escopo",
+    "Change Management"
+  ],
+  "headhunter_weight": 2.5
+}
