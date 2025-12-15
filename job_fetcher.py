@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 job_fetcher.py
-Email diário: SOMENTE Brasil
-Email semanal: Internacional (Catalunha, ES/PT/CA, LATAM, Global)
+Busca vagas e envia e-mails:
+- Diário: somente Brasil
+- Semanal: Internacional (Catalunha, LATAM, ES/PT)
 """
 
 import os
@@ -11,8 +12,10 @@ import re
 import requests
 from datetime import datetime
 from typing import List, Dict, Any
+
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
+
 
 # -------------------------
 # Config
@@ -20,32 +23,26 @@ from sendgrid.helpers.mail import Mail
 CONFIG = {
     "locations": ["Brazil", "Spain", "Argentina", "Chile", "Colombia", "Peru", "Mexico"],
     "languages": ["pt", "es", "ca"],
-    "contracts": ["CLT", "PJ"],
-    "modalities": ["Presencial", "Híbrida", "Remota"],
-    "min_salary_brl": 14000,
     "keywords": [
         "governança", "gestão de mudanças", "project controls", "PMO",
-        "CAPEX", "FEL", "AACE", "scope", "escopo", "PPM", "Orion"
+        "CAPEX", "FEL", "AACE", "escopo", "scope", "PPM", "Orion"
     ],
     "fetch_limit_per_source": 30,
     "email": {
         "from": "gasull.ramon@gmail.com",
-        "to": ["gasull.ramon@gmail.com"],
-        "subject_prefix": "[Vagas]"
+        "to": ["gasull.ramon@gmail.com"]
     },
-    "adzuana": {
+    "adzuna": {
         "app_id": os.getenv("ADZUNA_APP_ID", ""),
         "app_key": os.getenv("ADZUNA_APP_KEY", "")
-    },
-    "jooble": {
-        "api_key": os.getenv("JOOBLE_API_KEY", "")
     }
 }
 
-DB_PATH = os.getenv("JOB_DB_PATH", "jobs.db")
+DB_PATH = "jobs.db"
+
 
 # -------------------------
-# DB helpers
+# DB
 # -------------------------
 def init_db():
     conn = sqlite3.connect(DB_PATH)
@@ -62,13 +59,15 @@ def init_db():
     conn.commit()
     conn.close()
 
-def seen(job_id, source):
+
+def seen(job_id):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT 1 FROM seen_jobs WHERE id=? AND source=?", (job_id, source))
+    c.execute("SELECT 1 FROM seen_jobs WHERE id=?", (job_id,))
     r = c.fetchone()
     conn.close()
     return r is not None
+
 
 def mark_seen(job_id, source, url, title):
     conn = sqlite3.connect(DB_PATH)
@@ -83,6 +82,7 @@ def mark_seen(job_id, source, url, title):
         pass
     conn.close()
 
+
 # -------------------------
 # Scoring
 # -------------------------
@@ -94,153 +94,146 @@ def score_job(job: Dict[str, Any]) -> float:
         if kw.lower() in text:
             score += 2.0
 
-    if any(lang in text for lang in CONFIG["languages"]):
+    if job.get("country") == "Brazil":
+        score += 2.0
+
+    if job.get("language") in CONFIG["languages"]:
         score += 1.0
 
     return score
 
-# -------------------------
-# Filters
-# -------------------------
-def is_brazil_job(job):
-    text = f"{job.get('location','')} {job.get('country','')}".lower()
-    return "brazil" in text or "brasil" in text
-
-def international_bucket(job):
-    text = f"{job.get('location','')} {job.get('description','')}".lower()
-
-    if any(x in text for x in [
-        "catalunya", "catalonia", "barcelona", "girona", "tarragona", "lleida"
-    ]):
-        return "CATALUNHA"
-
-    if any(x in text for x in [
-        "spain", "españa", "portugal", "mexico", "argentina",
-        "chile", "colombia", "peru", "uruguay"
-    ]):
-        return "ESP_PT"
-
-    if "latin america" in text or "latam" in text:
-        return "LATAM"
-
-    if job.get("_score", 0) >= 4.0:
-        return "GLOBAL"
-
-    return None
 
 # -------------------------
-# Email builders
+# FETCHERS (⚠️ ANTES DO AGGREGATE)
 # -------------------------
-def build_daily_email_html(jobs):
-    html = [f"<h2>Vagas Brasil — {datetime.now().strftime('%Y-%m-%d')}</h2>"]
-    for j in jobs[:10]:
-        html.append(
-            f"<b>{j['title']}</b> — {j.get('company','')}<br>"
-            f"{j.get('location','')} — Score {j['_score']:.2f}<br>"
-            f"<a href='{j['url']}'>Link</a><hr>"
-        )
-    return "\n".join(html)
+def fetch_adzuna(country_code="br", limit=20):
+    app_id = CONFIG["adzuna"]["app_id"]
+    app_key = CONFIG["adzuna"]["app_key"]
 
-def build_weekly_email_html(buckets):
-    html = [f"<h2>Vagas Internacionais — Semana</h2>"]
-    order = [
-        ("CATALUNHA", "🇪🇸 Catalunha"),
-        ("ESP_PT", "🇪🇸🇵🇹 Espanhol / Português"),
-        ("LATAM", "🌎 LATAM"),
-        ("GLOBAL", "🌍 Global (alta aderência)")
-    ]
-    for key, title in order:
-        items = buckets.get(key, [])
-        if not items:
-            continue
-        html.append(f"<h3>{title}</h3><ul>")
-        for j in items[:15]:
-            html.append(
-                f"<li><a href='{j['url']}'>{j['title']}</a> — Score {j['_score']:.2f}</li>"
-            )
-        html.append("</ul>")
-    return "\n".join(html)
+    if not app_id or not app_key:
+        return []
 
-# -------------------------
-# SendGrid
-# -------------------------
-def send_email(subject, html):
-    sg = SendGridAPIClient(os.getenv("SENDGRID_API_KEY"))
-    msg = Mail(
-        from_email=CONFIG["email"]["from"],
-        to_emails=CONFIG["email"]["to"][0],
-        subject=subject,
-        html_content=html
-    )
-    sg.send(msg)
+    url = f"https://api.adzuna.com/v1/api/jobs/{country_code}/search/1"
+    params = {
+        "app_id": app_id,
+        "app_key": app_key,
+        "results_per_page": limit,
+        "what": " ".join(CONFIG["keywords"])
+    }
+
+    r = requests.get(url, params=params, timeout=15)
+    r.raise_for_status()
+    data = r.json()
+
+    jobs = []
+    for item in data.get("results", []):
+        jobs.append({
+            "id": f"adzuna-{item.get('id')}",
+            "source": "adzuna",
+            "title": item.get("title"),
+            "company": item.get("company", {}).get("display_name"),
+            "location": item.get("location", {}).get("display_name"),
+            "description": item.get("description"),
+            "url": item.get("redirect_url"),
+            "country": country_code.upper(),
+            "language": ""
+        })
+    return jobs
+
 
 # -------------------------
-# Aggregator
-# -------------------------
-# -------------------------
-# Aggregator
+# AGGREGATOR (AGORA NO LUGAR CERTO)
 # -------------------------
 def aggregate_jobs():
     all_jobs = []
 
-    # Adzuna
-    for country, code in {
+    adzuna_map = {
         "Brazil": "br",
         "Spain": "es",
         "Argentina": "ar",
         "Chile": "cl",
         "Colombia": "co",
         "Peru": "pe",
-        "Mexico": "mx",
-    }.items():
-        all_jobs.extend(fetch_adzuna(country_code=code))
-        all_jobs.extend(fetch_jooble(country=country))
+        "Mexico": "mx"
+    }
 
-    # Remote / global
-    all_jobs.extend(fetch_remoteok())
+    for country, code in adzuna_map.items():
+        jobs = fetch_adzuna(country_code=code, limit=CONFIG["fetch_limit_per_source"])
+        for j in jobs:
+            j["country"] = country
+            all_jobs.append(j)
 
-    # deduplicação simples por URL
-    seen_urls = set()
-    unique = []
+    unique = {}
     for j in all_jobs:
-        url = j.get("url")
-        if not url or url in seen_urls:
-            continue
-        seen_urls.add(url)
-        unique.append(j)
+        unique[j["id"]] = j
 
-    return unique
+    jobs = list(unique.values())
+
+    for j in jobs:
+        j["_score"] = score_job(j)
+
+    jobs.sort(key=lambda x: x["_score"], reverse=True)
+    return jobs
 
 
 # -------------------------
-# Main
+# EMAIL
+# -------------------------
+def send_email(subject: str, html: str):
+    api_key = os.getenv("SENDGRID_API_KEY")
+    if not api_key:
+        raise RuntimeError("SENDGRID_API_KEY ausente")
+
+    msg = Mail(
+        from_email=CONFIG["email"]["from"],
+        to_emails=CONFIG["email"]["to"][0],
+        subject=subject,
+        html_content=html
+    )
+
+    sg = SendGridAPIClient(api_key)
+    sg.send(msg)
+
+
+def build_html(title: str, jobs: List[Dict[str, Any]]):
+    html = [f"<h2>{title}</h2><ul>"]
+    for j in jobs[:25]:
+        html.append(
+            f"<li><a href='{j['url']}'>{j['title']}</a> — "
+            f"{j.get('company','')} — Score {j['_score']:.1f}</li>"
+        )
+    html.append("</ul>")
+    return "\n".join(html)
+
+
+# -------------------------
+# MAIN
 # -------------------------
 def main():
     init_db()
     jobs = aggregate_jobs()
 
+    new_jobs = []
     for j in jobs:
-        j["_score"] = score_job(j)
+        if not seen(j["id"]):
+            mark_seen(j["id"], j["source"], j["url"], j["title"])
+            new_jobs.append(j)
 
-    brazil = [j for j in jobs if is_brazil_job(j)]
-    international = [j for j in jobs if not is_brazil_job(j)]
+    brazil = [j for j in new_jobs if j["country"] == "Brazil"]
+    international = [j for j in new_jobs if j["country"] != "Brazil"]
 
     if brazil:
         send_email(
-            "Vagas Brasil",
-            build_daily_email_html(brazil)
+            f"Vagas Brasil — {datetime.now().strftime('%Y-%m-%d')}",
+            build_html("Brasil", brazil)
         )
 
-    buckets = {"CATALUNHA": [], "ESP_PT": [], "LATAM": [], "GLOBAL": []}
-    for j in international:
-        b = international_bucket(j)
-        if b:
-            buckets[b].append(j)
+    if international:
+        send_email(
+            "Vagas Internacionais (Semanal)",
+            build_html("Internacional", international)
+        )
 
-    send_email(
-        "Vagas Internacionais (Semanal)",
-        build_weekly_email_html(buckets)
-    )
 
 if __name__ == "__main__":
     main()
