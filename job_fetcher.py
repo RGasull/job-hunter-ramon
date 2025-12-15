@@ -102,6 +102,19 @@ def score_job(job: Dict[str, Any]) -> float:
 
     return score
 
+def is_brazil_job(job):
+    text = " ".join([
+        job.get("location", ""),
+        job.get("country", ""),
+        job.get("description", "")
+    ]).lower()
+
+    return any(x in text for x in [
+        "brasil", "brazil",
+        "são paulo", "rio de janeiro", "belo horizonte",
+        "curitiba", "porto alegre", "recife", "fortaleza",
+        "remoto brasil", "home office brasil", "clt", "pj"
+    ])
 
 # -------------------------
 # FETCHERS (⚠️ ANTES DO AGGREGATE)
@@ -211,28 +224,74 @@ def build_html(title: str, jobs: List[Dict[str, Any]]):
 # -------------------------
 def main():
     init_db()
+    print("Fetching jobs...")
+
+    # 1. Busca agregada
     jobs = aggregate_jobs()
 
+    if not jobs:
+        print("Nenhuma vaga retornada pelos buscadores.")
+        return
+
+    # 2. Deduplicação via DB
     new_jobs = []
     for j in jobs:
-        if not seen(j["id"]):
-            mark_seen(j["id"], j["source"], j["url"], j["title"])
-            new_jobs.append(j)
-
-    brazil = [j for j in new_jobs if j["country"] == "Brazil"]
-    international = [j for j in new_jobs if j["country"] != "Brazil"]
-
-    if brazil:
-        send_email(
-            f"Vagas Brasil — {datetime.now().strftime('%Y-%m-%d')}",
-            build_html("Brasil", brazil)
+        jid = j.get("id") or re.sub(
+            r"[^a-z0-9]", "", (j.get("url") or j.get("title") or "")[:100].lower()
         )
+        source = j.get("source", "unknown")
 
-    if international:
+        if seen(jid, source):
+            continue
+
+        mark_seen(jid, source, j.get("url"), j.get("title"))
+        j["_score"] = score_job(j)
+        new_jobs.append(j)
+
+    if not new_jobs:
+        print("Nenhuma vaga nova após deduplicação.")
+        return
+
+    print(f"{len(new_jobs)} vagas novas após deduplicação.")
+
+    # 3. Separação Brasil x Internacional
+    brazil_jobs = [j for j in new_jobs if is_brazil_job(j)]
+    international_jobs = [j for j in new_jobs if not is_brazil_job(j)]
+
+    # 4. EMAIL DIÁRIO — SOMENTE BRASIL
+    if brazil_jobs:
+        print(f"Enviando email Brasil ({len(brazil_jobs)} vagas)")
         send_email(
-            "Vagas Internacionais (Semanal)",
-            build_html("Internacional", international)
+            subject="Vagas Brasil — Diário",
+            html=build_daily_email_html(brazil_jobs),
         )
+    else:
+        print("Nenhuma vaga do Brasil hoje.")
+
+    # 5. EMAIL SEMANAL — INTERNACIONAL (somente às segundas)
+    # evita spam diário e mantém foco
+    if datetime.now().weekday() == 0 and international_jobs:
+        print(f"Enviando email Internacional semanal ({len(international_jobs)} vagas)")
+
+        buckets = {
+            "CATALUNHA": [],
+            "ESP_PT": [],
+            "LATAM": [],
+            "GLOBAL": [],
+        }
+
+        for j in international_jobs:
+            bucket = international_bucket(j)
+            if bucket:
+                buckets[bucket].append(j)
+
+        send_email(
+            subject="Vagas Internacionais — Semanal",
+            html=build_weekly_email_html(buckets),
+        )
+    else:
+        print("Email internacional não enviado hoje (não é segunda ou sem vagas).")
+
 
 
 if __name__ == "__main__":
