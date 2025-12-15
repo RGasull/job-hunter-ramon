@@ -313,17 +313,34 @@ def build_email_html(jobs: List[Dict[str,Any]]):
 
 def send_email(subject, html_body):
     smtp_cfg = CONFIG["smtp"]
+
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"{CONFIG['email']['subject_prefix']} {subject}"
     msg["From"] = CONFIG["email"]["from"]
     msg["To"] = ", ".join(CONFIG["email"]["to"])
+
     part = MIMEText(html_body, "html")
     msg.attach(part)
+
     context = ssl.create_default_context()
+
     with smtplib.SMTP(smtp_cfg["host"], smtp_cfg["port"]) as server:
         server.starttls(context=context)
         server.login(smtp_cfg["user"], smtp_cfg["password"])
-        server.sendmail(CONFIG["email"]["from"], CONFIG["email"]["to"], msg.as_string())
+
+        # 👇 GARANTE formato correto do envelope TO
+        to_addrs = (
+            [CONFIG["email"]["to"]]
+            if isinstance(CONFIG["email"]["to"], str)
+            else CONFIG["email"]["to"]
+        )
+
+        server.sendmail(
+            CONFIG["email"]["from"],
+            to_addrs,
+            msg.as_string()
+        )
+
 
 # -------------------------
 # Main
