@@ -175,6 +175,44 @@ def send_email(subject, html):
     sg.send(msg)
 
 # -------------------------
+# Aggregator
+# -------------------------
+# -------------------------
+# Aggregator
+# -------------------------
+def aggregate_jobs():
+    all_jobs = []
+
+    # Adzuna
+    for country, code in {
+        "Brazil": "br",
+        "Spain": "es",
+        "Argentina": "ar",
+        "Chile": "cl",
+        "Colombia": "co",
+        "Peru": "pe",
+        "Mexico": "mx",
+    }.items():
+        all_jobs.extend(fetch_adzuna(country_code=code))
+        all_jobs.extend(fetch_jooble(country=country))
+
+    # Remote / global
+    all_jobs.extend(fetch_remoteok())
+
+    # deduplicação simples por URL
+    seen_urls = set()
+    unique = []
+    for j in all_jobs:
+        url = j.get("url")
+        if not url or url in seen_urls:
+            continue
+        seen_urls.add(url)
+        unique.append(j)
+
+    return unique
+
+
+# -------------------------
 # Main
 # -------------------------
 def main():
