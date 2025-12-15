@@ -16,4 +16,11 @@
     "Change Management"
   ],
   "headhunter_weight": 2.5
+  "email": {
+  "from_name": "Ramon Gasull",
+  "from": "gasull.ramon@gmail.com",
+  "to": ["gasull.ramon@gmail.com"],
+  "subject_prefix": "[Job Hunter]"
+}
+
 }

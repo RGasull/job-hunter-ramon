@@ -8,8 +8,6 @@ Configurar via environment variables (recommended) or config.json.
 import os
 import json
 import sqlite3
-import smtplib
-import ssl
 import time
 from datetime import datetime, timezone, timedelta
 from email.mime.multipart import MIMEMultipart
@@ -18,6 +16,9 @@ from typing import List, Dict, Any
 import requests
 from bs4 import BeautifulSoup
 import re
+import sendgrid
+from sendgrid.helpers.mail import Mail
+
 
 # -------------------------
 # Config (edit or use env)
@@ -42,13 +43,7 @@ CONFIG = {
     "jooble": {
         "api_key": os.getenv("JOOBLE_API_KEY", "")
     },
-    # SMTP settings (SendGrid or your provider)
-    "smtp": {
-        "host": os.getenv("SMTP_HOST", "smtp.sendgrid.net"),
-        "port": int(os.getenv("SMTP_PORT", "587")),
-        "user": os.getenv("SMTP_USER", ""),
-        "password": os.getenv("SMTP_PASS", "")
-    }
+      }
 }
 
 # -------------------------
@@ -311,44 +306,34 @@ def build_email_html(jobs: List[Dict[str,Any]]):
     html.append("<p>Fim do relatório.</p>")
     return "\n".join(html)
 
-def send_email(subject, html_body):
+def send_email(subject: str, html_body: str):
     import os
-    import ssl
-    import smtplib
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-    from email.utils import formataddr
+    from sendgrid import SendGridAPIClient
+    from sendgrid.helpers.mail import Mail
 
-    email_cfg = CONFIG["email"]
-    smtp_cfg = CONFIG["smtp"]
+    api_key = os.environ.get("SENDGRID_API_KEY")
+    if not api_key:
+        raise RuntimeError("SENDGRID_API_KEY não encontrada nos secrets")
 
-    smtp_password = os.environ["SMTP_PASS"]
+    message = Mail(
+        from_email=(
+            CONFIG["email"].get("from_name", ""),
+            CONFIG["email"]["from"]
+        ),
+        to_emails=CONFIG["email"]["to"],
+        subject=f"{CONFIG['email'].get('subject_prefix', '')} {subject}".strip(),
+        html_content=html_body
+    )
 
-    msg = MIMEMultipart("alternative")
+    try:
+        sg = SendGridAPIClient(api_key)
+        response = sg.send(message)
+        print(f"Email enviado com sucesso (status {response.status_code})")
+    except Exception as e:
+        print("Erro ao enviar email via SendGrid API")
+        raise e
 
-    subject_prefix = email_cfg.get("subject_prefix", "")
-    msg["Subject"] = f"{subject_prefix}{subject}".strip()
 
-    from_name = email_cfg.get("from_name", "")
-    from_email = email_cfg["from"]
-
-    from_addr = formataddr((from_name, from_email))
-
-    msg["From"] = from_addr
-    msg["To"] = ", ".join(email_cfg["to"])
-    msg["Reply-To"] = from_email   # 🔴 LINHA CRÍTICA
-
-    msg.attach(MIMEText(html_body, "html", "utf-8"))
-
-    context = ssl.create_default_context()
-    with smtplib.SMTP(smtp_cfg["host"], smtp_cfg["port"]) as server:
-        server.starttls(context=context)
-        server.login(smtp_cfg["user"], smtp_password)
-        server.sendmail(
-            from_email,             # envelope sender
-            email_cfg["to"],
-            msg.as_string()
-        )
 
 
 
