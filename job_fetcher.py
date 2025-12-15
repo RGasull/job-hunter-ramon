@@ -319,36 +319,39 @@ def send_email(subject, html_body):
     from email.mime.text import MIMEText
     from email.utils import formataddr
 
-    # Configs
     email_cfg = CONFIG["email"]
     smtp_cfg = CONFIG["smtp"]
 
+    # Senha vem do GitHub Secret
     smtp_password = os.environ["SMTP_PASS"]
 
-    # Mensagem
+    # Monta mensagem
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"{email_cfg.get('subject_prefix', '')} {subject}".strip()
 
-    from_addr = formataddr((
-        email_cfg.get("from_name", email_cfg["from"]),
-        email_cfg["from"]
-    ))
+    subject_prefix = email_cfg.get("subject_prefix", "")
+    msg["Subject"] = f"{subject_prefix}{subject}".strip()
+
+    from_name = email_cfg.get("from_name", "")
+    from_email = email_cfg["from"]
+
+    from_addr = formataddr((from_name, from_email))
 
     msg["From"] = from_addr
     msg["To"] = ", ".join(email_cfg["to"])
 
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-    # Envio
+    # Envio SMTP (SendGrid exige envelope = sender verificado)
     context = ssl.create_default_context()
     with smtplib.SMTP(smtp_cfg["host"], smtp_cfg["port"]) as server:
         server.starttls(context=context)
         server.login(smtp_cfg["user"], smtp_password)
         server.sendmail(
-            email_cfg["from"],
+            from_email,              # envelope sender
             email_cfg["to"],
             msg.as_string()
         )
+
 
 
 # -------------------------
