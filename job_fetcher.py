@@ -322,10 +322,8 @@ def send_email(subject, html_body):
     email_cfg = CONFIG["email"]
     smtp_cfg = CONFIG["smtp"]
 
-    # Senha vem do GitHub Secret
     smtp_password = os.environ["SMTP_PASS"]
 
-    # Monta mensagem
     msg = MIMEMultipart("alternative")
 
     subject_prefix = email_cfg.get("subject_prefix", "")
@@ -338,19 +336,20 @@ def send_email(subject, html_body):
 
     msg["From"] = from_addr
     msg["To"] = ", ".join(email_cfg["to"])
+    msg["Reply-To"] = from_email   # 🔴 LINHA CRÍTICA
 
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
-    # Envio SMTP (SendGrid exige envelope = sender verificado)
     context = ssl.create_default_context()
     with smtplib.SMTP(smtp_cfg["host"], smtp_cfg["port"]) as server:
         server.starttls(context=context)
         server.login(smtp_cfg["user"], smtp_password)
         server.sendmail(
-            from_email,              # envelope sender
+            from_email,             # envelope sender
             email_cfg["to"],
             msg.as_string()
         )
+
 
 
 
