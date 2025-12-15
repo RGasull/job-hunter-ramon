@@ -312,34 +312,44 @@ def build_email_html(jobs: List[Dict[str,Any]]):
     return "\n".join(html)
 
 def send_email(subject, html_body):
+    import os
+    import ssl
+    import smtplib
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+    from email.utils import formataddr
+
     smtp_cfg = CONFIG["smtp"]
 
+    # 🔐 API Key vem do GitHub Secret SMTP_PASS
+    smtp_password = os.environ["SMTP_PASS"]
+
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"{CONFIG['email']['subject_prefix']} {subject}"
-    msg["From"] = CONFIG["email"]["from"]
+    msg["Subject"] = f"{CONFIG['email'].get('subject_prefix', '')} {subject}".strip()
+
+    # Header From (nome + email) → OK
+    msg["From"] = formataddr((
+        CONFIG["email"]["from_name"],
+        CONFIG["email"]["from"]
+    ))
+
     msg["To"] = ", ".join(CONFIG["email"]["to"])
 
-    part = MIMEText(html_body, "html")
-    msg.attach(part)
+    msg.attach(MIMEText(html_body, "html", "utf-8"))
 
     context = ssl.create_default_context()
 
     with smtplib.SMTP(smtp_cfg["host"], smtp_cfg["port"]) as server:
         server.starttls(context=context)
-        server.login(smtp_cfg["user"], smtp_cfg["password"])
+        server.login(smtp_cfg["user"], smtp_password)
 
-        # 👇 GARANTE formato correto do envelope TO
-        to_addrs = (
-            [CONFIG["email"]["to"]]
-            if isinstance(CONFIG["email"]["to"], str)
-            else CONFIG["email"]["to"]
-        )
-
+        # 🚨 AQUI ESTÁ O PONTO CRÍTICO
         server.sendmail(
-            CONFIG["email"]["from"],
-            to_addrs,
+            CONFIG["email"]["from"],   # ✅ APENAS O EMAIL PURO
+            CONFIG["email"]["to"],
             msg.as_string()
         )
+
 
 
 # -------------------------
