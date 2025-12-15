@@ -319,37 +319,36 @@ def send_email(subject, html_body):
     from email.mime.text import MIMEText
     from email.utils import formataddr
 
+    # Configs
+    email_cfg = CONFIG["email"]
     smtp_cfg = CONFIG["smtp"]
 
-    # 🔐 API Key vem do GitHub Secret SMTP_PASS
     smtp_password = os.environ["SMTP_PASS"]
 
+    # Mensagem
     msg = MIMEMultipart("alternative")
-    msg["Subject"] = f"{CONFIG['email'].get('subject_prefix', '')} {subject}".strip()
+    msg["Subject"] = f"{email_cfg.get('subject_prefix', '')} {subject}".strip()
 
-    # Header From (nome + email) → OK
-   msg["From"] = formataddr((
-    CONFIG["email"].get("from_name", CONFIG["email"]["from"]),
-    CONFIG["email"]["from"]
-))
+    from_addr = formataddr((
+        email_cfg.get("from_name", email_cfg["from"]),
+        email_cfg["from"]
+    ))
 
-    msg["To"] = ", ".join(CONFIG["email"]["to"])
+    msg["From"] = from_addr
+    msg["To"] = ", ".join(email_cfg["to"])
 
     msg.attach(MIMEText(html_body, "html", "utf-8"))
 
+    # Envio
     context = ssl.create_default_context()
-
     with smtplib.SMTP(smtp_cfg["host"], smtp_cfg["port"]) as server:
         server.starttls(context=context)
         server.login(smtp_cfg["user"], smtp_password)
-
-        # 🚨 AQUI ESTÁ O PONTO CRÍTICO
         server.sendmail(
-            CONFIG["email"]["from"],   # ✅ APENAS O EMAIL PURO
-            CONFIG["email"]["to"],
+            email_cfg["from"],
+            email_cfg["to"],
             msg.as_string()
         )
-
 
 
 # -------------------------
