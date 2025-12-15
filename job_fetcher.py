@@ -1,39 +1,36 @@
 #!/usr/bin/env python3
 """
 job_fetcher.py
-Busca vagas e envia um e-mail diário com as top 3 + lista por país.
-Configurar via environment variables (recommended) or config.json.
+Email diário: SOMENTE Brasil
+Email semanal: Internacional (Catalunha, ES/PT/CA, LATAM, Global)
 """
 
 import os
-import json
 import sqlite3
-import time
-from datetime import datetime, timezone, timedelta
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from typing import List, Dict, Any
-import requests
-from bs4 import BeautifulSoup
 import re
-import sendgrid
+import requests
+from datetime import datetime
+from typing import List, Dict, Any
+from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import Mail
 
-
 # -------------------------
-# Config (edit or use env)
+# Config
 # -------------------------
 CONFIG = {
     "locations": ["Brazil", "Spain", "Argentina", "Chile", "Colombia", "Peru", "Mexico"],
-    "languages": ["pt", "es", "ca"],  # português, espanhol, catalão
+    "languages": ["pt", "es", "ca"],
     "contracts": ["CLT", "PJ"],
     "modalities": ["Presencial", "Híbrida", "Remota"],
     "min_salary_brl": 14000,
-    "keywords": ["governança", "gestão de mudanças", "project controls", "PMO", "CAPEX", "FEL", "AACE", "scope", "escopo", "PPM", "Orion"],
+    "keywords": [
+        "governança", "gestão de mudanças", "project controls", "PMO",
+        "CAPEX", "FEL", "AACE", "scope", "escopo", "PPM", "Orion"
+    ],
     "fetch_limit_per_source": 30,
     "email": {
-        "from": "seu@dominio.com",
-        "to": ["seu@dominio.com"],
+        "from": "gasull.ramon@gmail.com",
+        "to": ["gasull.ramon@gmail.com"],
         "subject_prefix": "[Vagas]"
     },
     "adzuana": {
@@ -42,15 +39,14 @@ CONFIG = {
     },
     "jooble": {
         "api_key": os.getenv("JOOBLE_API_KEY", "")
-    },
-      }
+    }
+}
 
-
-# -------------------------
-# Simple DB to avoid duplicates
-# -------------------------
 DB_PATH = os.getenv("JOB_DB_PATH", "jobs.db")
 
+# -------------------------
+# DB helpers
+# -------------------------
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -78,303 +74,135 @@ def mark_seen(job_id, source, url, title):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     try:
-        c.execute("INSERT INTO seen_jobs (id, source, url, title) VALUES (?,?,?,?)", (job_id, source, url, title))
+        c.execute(
+            "INSERT INTO seen_jobs (id, source, url, title) VALUES (?,?,?,?)",
+            (job_id, source, url, title)
+        )
         conn.commit()
     except sqlite3.IntegrityError:
         pass
     conn.close()
 
 # -------------------------
-# Helpers: scoring and normalization
+# Scoring
 # -------------------------
-def score_job(job: Dict[str,Any], config=CONFIG) -> float:
-    """Return a heuristic score for ranking."""
+def score_job(job: Dict[str, Any]) -> float:
     score = 0.0
-    title = job.get("title","").lower()
-    desc = job.get("description","").lower()
-    salary = job.get("salary", 0) or 0
-    for kw in config["keywords"]:
-        if kw.lower() in title or kw.lower() in desc:
+    text = f"{job.get('title','')} {job.get('description','')}".lower()
+
+    for kw in CONFIG["keywords"]:
+        if kw.lower() in text:
             score += 2.0
-    if any(lang in job.get("language","").lower() for lang in config["languages"]):
+
+    if any(lang in text for lang in CONFIG["languages"]):
         score += 1.0
-    if job.get("contract") and any(c.lower() in job.get("contract","").lower() for c in config["contracts"]):
-        score += 0.5
-    if job.get("modality") and any(m.lower() in job.get("modality","").lower() for m in config["modalities"]):
-        score += 0.5
-    # salary normalization: convert local salary to BRL is complex -- assume numeric in BRL when present
-    try:
-        if salary and float(salary) >= config["min_salary_brl"]:
-            score += 2.0
-    except Exception:
-        pass
-    # older jobs slightly lower
-    published_at = job.get("published_at")
-    if published_at:
-        try:
-            dt = datetime.fromisoformat(published_at)
-            days = (datetime.now() - dt).days
-            score -= min(days * 0.05, 1.0)
-        except Exception:
-            pass
+
     return score
 
 # -------------------------
-# Source: Adzuna example
+# Filters
 # -------------------------
-def fetch_adzuna(country_code="br", what=None, where=None, limit=20):
-    """
-    Adzuna example. Country codes: 'br', 'es', 'ar', etc.
-    Requires ADZUNA_APP_ID and ADZUNA_APP_KEY.
-    """
-    app_id = CONFIG["adzuana"]["app_id"]
-    app_key = CONFIG["adzuana"]["app_key"]
-    if not app_id or not app_key:
-        return []
-    base = f"https://api.adzuna.com/v1/api/jobs/{country_code}/search/1"
-    params = {
-        "app_id": app_id,
-        "app_key": app_key,
-        "results_per_page": limit,
-        "what": what or " ".join(CONFIG["keywords"]),
-        "where": where or ""
-    }
-    try:
-        r = requests.get(base, params=params, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        results = []
-        for item in data.get("results", []):
-            job = {
-                "id": f"adzuna-{item.get('id')}",
-                "source": "adzuna",
-                "title": item.get("title"),
-                "company": item.get("company", {}).get("display_name"),
-                "location": item.get("location", {}).get("display_name"),
-                "description": item.get("description"),
-                "url": item.get("redirect_url"),
-                "salary": item.get("salary_max") or item.get("salary_min"),
-                "published_at": item.get("created"),
-                "language": "",  # Adzuna doesn't provide language
-                "contract": "",
-                "modality": ""
-            }
-            results.append(job)
-        return results
-    except Exception as e:
-        print("Adzuna error:", e)
-        return []
+def is_brazil_job(job):
+    text = f"{job.get('location','')} {job.get('country','')}".lower()
+    return "brazil" in text or "brasil" in text
+
+def international_bucket(job):
+    text = f"{job.get('location','')} {job.get('description','')}".lower()
+
+    if any(x in text for x in [
+        "catalunya", "catalonia", "barcelona", "girona", "tarragona", "lleida"
+    ]):
+        return "CATALUNHA"
+
+    if any(x in text for x in [
+        "spain", "españa", "portugal", "mexico", "argentina",
+        "chile", "colombia", "peru", "uruguay"
+    ]):
+        return "ESP_PT"
+
+    if "latin america" in text or "latam" in text:
+        return "LATAM"
+
+    if job.get("_score", 0) >= 4.0:
+        return "GLOBAL"
+
+    return None
 
 # -------------------------
-# Source: Jooble example
+# Email builders
 # -------------------------
-def fetch_jooble(country="br", keywords=None, limit=20):
-    api_key = CONFIG["jooble"]["api_key"]
-    if not api_key:
-        return []
-    url = "https://jooble.org/api/"
-    payload = {
-        "keywords": keywords or " ".join(CONFIG["keywords"]),
-        "location": country,
-        "page": 1
-    }
-    headers = {"Content-Type": "application/json"}
-    try:
-        r = requests.post(url + api_key, json=payload, headers=headers, timeout=15)
-        r.raise_for_status()
-        data = r.json()
-        results = []
-        for item in data.get("jobs", [])[:limit]:
-            job = {
-                "id": f"jooble-{hash(item.get('link','') )}",
-                "source": "jooble",
-                "title": item.get("title"),
-                "company": item.get("company"),
-                "location": item.get("location"),
-                "description": item.get("snippet") or item.get("description"),
-                "url": item.get("link"),
-                "salary": item.get("salary"),
-                "published_at": item.get("date"),
-                "language": "",
-                "contract": "",
-                "modality": ""
-            }
-            results.append(job)
-        return results
-    except Exception as e:
-        print("Jooble error:", e)
-        return []
-
-# -------------------------
-# Example fallback scraping (simple) - adapt per site
-# -------------------------
-def fetch_remoteok(keywords=None, limit=20):
-    # RemoteOK provides JSON; but respects robots. This is illustrative.
-    try:
-        r = requests.get("https://remoteok.com/remote-jobs.json", timeout=15)
-        data = r.json()
-        results = []
-        for item in data[1:limit+1]:
-            title = item.get("position") or item.get("title")
-            description = item.get("description","")
-            results.append({
-                "id": f"remoteok-{item.get('id')}",
-                "source": "remoteok",
-                "title": title,
-                "company": item.get("company"),
-                "location": item.get("location"),
-                "description": description,
-                "url": item.get("url"),
-                "salary": None,
-                "published_at": item.get("date"),
-                "language": "en",
-                "contract": "",
-                "modality": "Remota"
-            })
-        return results
-    except Exception as e:
-        print("RemoteOK error:", e)
-        return []
-
-# -------------------------
-# Aggregator
-# -------------------------
-def aggregate_jobs():
-    all_jobs = []
-    # For each target country, fetch from sources
-    # Map country names to adzuna codes (example)
-    adzuna_map = {"Brazil":"br", "Spain":"es", "Argentina":"ar", "Chile":"cl", "Colombia":"co", "Peru":"pe", "Mexico":"mx"}
-    for country in CONFIG["locations"]:
-        # Adzuna
-        code = adzuna_map.get(country, "us")
-        adz = fetch_adzuna(country_code=code, limit=CONFIG["fetch_limit_per_source"])
-        for j in adz:
-            j["country"] = country
-            all_jobs.append(j)
-        # Jooble
-        jb = fetch_jooble(country=country, keywords=" ".join(CONFIG["keywords"]), limit=CONFIG["fetch_limit_per_source"])
-        for j in jb:
-            j["country"] = country
-            all_jobs.append(j)
-    # Add remote/global sources
-    all_jobs += fetch_remoteok(limit=30)
-    # de-duplicate by url/title
-    seen_urls = set()
-    unique = []
-    for j in all_jobs:
-        url = j.get("url") or j.get("title")
-        if url and url in seen_urls:
-            continue
-        seen_urls.add(url)
-        unique.append(j)
-    # filter/score
-    scored = []
-    for j in unique:
-        s = score_job(j)
-        j["_score"] = s
-        scored.append(j)
-    scored.sort(key=lambda x: x["_score"], reverse=True)
-    return scored
-
-# -------------------------
-# Email report
-# -------------------------
-def build_email_html(jobs: List[Dict[str,Any]]):
-    # Top 3 detailed
-    top3 = jobs[:3]
-    rest = jobs[3:]
-    html = []
-    html.append(f"<h2>Relatório diário de vagas — {datetime.now().strftime('%Y-%m-%d')}</h2>")
-    html.append("<h3>Top 3 mais aderentes</h3>")
-    for j in top3:
-        html.append(f"<b>{j.get('title')}</b> — {j.get('company') or ''} — <i>{j.get('country')}</i><br>")
-        html.append(f"Local: {j.get('location')} | Modalidade: {j.get('modality') or '—'} | Contrato: {j.get('contract') or '—'}<br>")
-        html.append(f"Salário: {j.get('salary') or '—'} | Score: {j.get('_score'):.2f}<br>")
-        html.append(f"<a href='{j.get('url')}'>Link da vaga</a><br>")
-        html.append(f"<p>{(j.get('description') or '')[:500]}...</p><hr>")
-    # Group rest by country
-    html.append("<h3>Outras vagas por país</h3>")
-    by_country = {}
-    for j in rest:
-        c = j.get("country", "Global")
-        by_country.setdefault(c, []).append(j)
-    for country, items in by_country.items():
-        html.append(f"<h4>{country} — {len(items)} vagas</h4><ul>")
-        for it in items[:20]:  # show first 20 por país
-            html.append(f"<li><a href='{it.get('url')}'>{it.get('title')}</a> — {it.get('company') or ''} — {it.get('location')} — Score: {it.get('_score'):.2f}</li>")
-        html.append("</ul>")
-    html.append("<p>Fim do relatório.</p>")
+def build_daily_email_html(jobs):
+    html = [f"<h2>Vagas Brasil — {datetime.now().strftime('%Y-%m-%d')}</h2>"]
+    for j in jobs[:10]:
+        html.append(
+            f"<b>{j['title']}</b> — {j.get('company','')}<br>"
+            f"{j.get('location','')} — Score {j['_score']:.2f}<br>"
+            f"<a href='{j['url']}'>Link</a><hr>"
+        )
     return "\n".join(html)
 
-def send_email(subject: str, html_body: str):
-    import os
-    from sendgrid import SendGridAPIClient
-    from sendgrid.helpers.mail import Mail
+def build_weekly_email_html(buckets):
+    html = [f"<h2>Vagas Internacionais — Semana</h2>"]
+    order = [
+        ("CATALUNHA", "🇪🇸 Catalunha"),
+        ("ESP_PT", "🇪🇸🇵🇹 Espanhol / Português"),
+        ("LATAM", "🌎 LATAM"),
+        ("GLOBAL", "🌍 Global (alta aderência)")
+    ]
+    for key, title in order:
+        items = buckets.get(key, [])
+        if not items:
+            continue
+        html.append(f"<h3>{title}</h3><ul>")
+        for j in items[:15]:
+            html.append(
+                f"<li><a href='{j['url']}'>{j['title']}</a> — Score {j['_score']:.2f}</li>"
+            )
+        html.append("</ul>")
+    return "\n".join(html)
 
-    api_key = os.getenv("SENDGRID_API_KEY")
-    if not api_key:
-        raise RuntimeError("SENDGRID_API_KEY não encontrada nos secrets")
-
-    from_email = CONFIG["email"]["from"]
-    to_emails = CONFIG["email"]["to"]
-
-    if isinstance(to_emails, list):
-        to_emails = to_emails[0]  # SendGrid aceita string simples
-
-    if not from_email or not to_emails:
-        raise RuntimeError("FROM ou TO inválido")
-
-    if not subject.strip():
-        subject = "Vagas encontradas hoje"
-
-    if not html_body.strip():
-        html_body = "<p>Nenhuma vaga nova hoje.</p>"
-
-    message = Mail(
-    from_email="gasull.ramon@gmail.com",
-    to_emails=["gasull.ramon@gmail.com"],
-    subject=subject,
-    html_content=html_body
+# -------------------------
+# SendGrid
+# -------------------------
+def send_email(subject, html):
+    sg = SendGridAPIClient(os.getenv("SENDGRID_API_KEY"))
+    msg = Mail(
+        from_email=CONFIG["email"]["from"],
+        to_emails=CONFIG["email"]["to"][0],
+        subject=subject,
+        html_content=html
     )
-
-
-    try:
-        sg = SendGridAPIClient(api_key)
-        response = sg.send(message)
-        print(f"Email enviado com sucesso: status {response.status_code}")
-    except Exception as e:
-        print("Erro ao enviar email via SendGrid API")
-        raise
-
-
-
-
-
-
+    sg.send(msg)
 
 # -------------------------
 # Main
 # -------------------------
 def main():
     init_db()
-    print("Fetching jobs...")
     jobs = aggregate_jobs()
-    # Mark seen and filter duplicates
-    new_jobs = []
+
     for j in jobs:
-        jid = j.get("id") or re.sub(r'[^a-z0-9]','', j.get("url","")[:100].lower())
-        source = j.get("source","unknown")
-        if seen(jid, source):
-            continue
-        mark_seen(jid, source, j.get("url"), j.get("title"))
-        new_jobs.append(j)
-    if not new_jobs:
-        print("Nenhuma nova vaga encontrada hoje.")
-    else:
-        print(f"Encontradas {len(new_jobs)} vagas novas. Preparando email...")
-        html = build_email_html(new_jobs)
-        send_email(f"Vagas {datetime.now().strftime('%Y-%m-%d')}", html)
-        print("Email enviado.")
+        j["_score"] = score_job(j)
+
+    brazil = [j for j in jobs if is_brazil_job(j)]
+    international = [j for j in jobs if not is_brazil_job(j)]
+
+    if brazil:
+        send_email(
+            "Vagas Brasil",
+            build_daily_email_html(brazil)
+        )
+
+    buckets = {"CATALUNHA": [], "ESP_PT": [], "LATAM": [], "GLOBAL": []}
+    for j in international:
+        b = international_bucket(j)
+        if b:
+            buckets[b].append(j)
+
+    send_email(
+        "Vagas Internacionais (Semanal)",
+        build_weekly_email_html(buckets)
+    )
 
 if __name__ == "__main__":
     main()
