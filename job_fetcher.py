@@ -311,27 +311,40 @@ def send_email(subject: str, html_body: str):
     from sendgrid import SendGridAPIClient
     from sendgrid.helpers.mail import Mail
 
-    api_key = os.environ.get("SENDGRID_API_KEY")
+    api_key = os.getenv("SENDGRID_API_KEY")
     if not api_key:
         raise RuntimeError("SENDGRID_API_KEY não encontrada nos secrets")
 
+    from_email = CONFIG["email"]["from"]
+    to_emails = CONFIG["email"]["to"]
+
+    if isinstance(to_emails, list):
+        to_emails = to_emails[0]  # SendGrid aceita string simples
+
+    if not from_email or not to_emails:
+        raise RuntimeError("FROM ou TO inválido")
+
+    if not subject.strip():
+        subject = "Vagas encontradas hoje"
+
+    if not html_body.strip():
+        html_body = "<p>Nenhuma vaga nova hoje.</p>"
+
     message = Mail(
-        from_email=(
-            CONFIG["email"].get("from_name", ""),
-            CONFIG["email"]["from"]
-        ),
-        to_emails=CONFIG["email"]["to"],
-        subject=f"{CONFIG['email'].get('subject_prefix', '')} {subject}".strip(),
+        from_email=from_email,
+        to_emails=to_emails,
+        subject=subject,
         html_content=html_body
     )
 
     try:
         sg = SendGridAPIClient(api_key)
         response = sg.send(message)
-        print(f"Email enviado com sucesso (status {response.status_code})")
+        print(f"Email enviado com sucesso: status {response.status_code}")
     except Exception as e:
         print("Erro ao enviar email via SendGrid API")
-        raise e
+        raise
+
 
 
 
